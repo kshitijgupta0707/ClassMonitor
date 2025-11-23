@@ -1,3 +1,4 @@
+// pages/Chatbot.jsx
 import React, { useState, useEffect, useContext, useRef } from "react";
 import "remixicon/fonts/remixicon.css";
 import { useNavigate } from "react-router-dom";
@@ -7,14 +8,17 @@ import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import MarkdownEditor from "@uiw/react-markdown-editor";
 import { getItem } from "../utils/storage.js";
+import ModelSelector from "../components/ModelSelector.jsx";
 
 const Chatbot = () => {
   const [query, setQuery] = useState("");
   const [chats, setChats] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [model, setModel] = useState("gemini-2.5-flash");
   const { user, selectedLecture } = useContext(UserContext);
   const navigate = useNavigate();
   const chatEndRef = useRef(null);
+  const evtRef = useRef(null); // store EventSource to close later
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -42,6 +46,34 @@ const Chatbot = () => {
     };
 
     fetchChats();
+  }, [user, selectedLecture, navigate]);
+
+  // load stored selected model on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const storedModel = await getItem("selectedModel");
+        if (!cancelled && storedModel) setModel(storedModel);
+      } catch (err) {
+        // ignore, keep default
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // close eventsource on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        if (evtRef.current) {
+          evtRef.current.close();
+          evtRef.current = null;
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
   }, []);
 
   const handleQueryChange = (e) => {
@@ -71,34 +103,69 @@ const Chatbot = () => {
       const userMessage = { type: "user", message: query };
       const aiMessage = { type: "ai", message: "" };
 
+      // append user and placeholder ai message
       setChats((prev) => [...prev, userMessage, aiMessage]);
       setQuery("");
+
       const token = await getItem("token");
-      // Set up SSE connection
-      const eventSource = new EventSource(
-        `http://localhost:8000/api/chatbot/ask?prompt=${encodeURIComponent(
-          query
-        )}&lectureId=${selectedLecture?._id}&token=${token}`
-      );
+      const lectureId = selectedLecture?._id;
+      const encodedPrompt = encodeURIComponent(query);
+      const encodedLecture = encodeURIComponent(lectureId);
+      const encodedToken = encodeURIComponent(token);
+      const encodedModel = encodeURIComponent(model || "gemini-2.5-flash");
+
+      // close existing source if any
+      if (evtRef.current) {
+        evtRef.current.close();
+        evtRef.current = null;
+      }
+
+      // create EventSource with model param
+      const url = `http://localhost:8000/api/chatbot/ask?prompt=${encodedPrompt}&lectureId=${encodedLecture}&token=${encodedToken}&model=${encodedModel}`;
+      const eventSource = new EventSource(url);
+      evtRef.current = eventSource;
 
       eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        setChats((prev) => {
-          const newChats = [...prev];
-          const lastMessage = newChats[newChats.length - 1];
-          lastMessage.message += data.chunk;
-          return newChats;
-        });
+        try {
+          const data = JSON.parse(event.data);
+          setChats((prev) => {
+            const newChats = [...prev];
+            const lastMessage = newChats[newChats.length - 1];
+            // guard
+            if (lastMessage && lastMessage.type === "ai") {
+              lastMessage.message = (lastMessage.message || "") + (data.chunk || "");
+            } else {
+              // safety: push a new ai message if structure changed
+              newChats.push({ type: "ai", message: data.chunk || "" });
+            }
+            return newChats;
+          });
+        } catch (e) {
+          console.error("Error parsing SSE message data:", e, event.data);
+        }
       };
 
       eventSource.onerror = (error) => {
         console.error("SSE Error:", error);
         eventSource.close();
+        evtRef.current = null;
         setIsStreaming(false);
       };
 
+      // custom 'done' event from server
       eventSource.addEventListener("done", () => {
-        eventSource.close();
+        try {
+          eventSource.close();
+        } catch (e) {}
+        evtRef.current = null;
+        setIsStreaming(false);
+      });
+
+      // optional: server could send an 'error' event
+      eventSource.addEventListener("error", (e) => {
+        console.error("SSE error event:", e);
+        try { eventSource.close(); } catch (_) {}
+        evtRef.current = null;
         setIsStreaming(false);
       });
     } catch (error) {
@@ -118,7 +185,7 @@ const Chatbot = () => {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-[#0f0c29] via-[#302b63] to-[#24243e]">
       <div className="w-[400px] h-[600px] bg-gradient-to-b from-[#1e1e2f] via-[#302b63] to-[#24243e] shadow-lg flex flex-col overflow-hidden rounded-md">
         {/* Header */}
-        <div className="p-4 bg-[#302b63] text-white relative">
+        <div className="p-4 bg-[#302b63] text-white relative flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <i
               className="ri-arrow-left-line text-xl text-gray-400 cursor-pointer hover:text-yellow-400 transition ease-in-out"
@@ -126,18 +193,21 @@ const Chatbot = () => {
             ></i>
             <h2 className="text-md font-semibold m-0">Chatbot</h2>
           </div>
-          <button
-            onClick={handleDelete}
-            className="absolute top-2 right-4 bg-yellow-400 text-[#000000] rounded-md hover:bg-yellow-500 transition my-2 px-4 py-0"
-            style={{
-              fontSize: "12px",
-              width: "60px",
-              height: "25px",
-              lineHeight: "25px",
-            }}
-          >
-            Delete
-          </button>
+
+          <div className="flex items-center gap-3">
+            {/* Model selector: disabled while streaming */}
+            <ModelSelector
+              onChange={(m) => setModel(m)}
+              defaultModel={model}
+              disabled={isStreaming}
+            />
+            <button
+              onClick={handleDelete}
+              className="bg-yellow-400 text-[#000000] rounded-md hover:bg-yellow-500 transition my-2 px-3 py-1 text-xs"
+            >
+              Delete
+            </button>
+          </div>
         </div>
 
         {/* File Name Section */}
@@ -153,9 +223,7 @@ const Chatbot = () => {
             {chats?.map((chat, index) => (
               <div
                 key={index}
-                className={`flex ${
-                  chat.type === "user" ? "justify-end" : "justify-start"
-                }`}
+                className={`flex ${chat.type === "user" ? "justify-end" : "justify-start"}`}
               >
                 <div
                   className={`max-w-[80%] p-3 rounded-lg ${
