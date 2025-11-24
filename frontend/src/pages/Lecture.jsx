@@ -280,7 +280,7 @@ const Classroom = () => {
 
           {/* TABS */}
           <div className="flex items-center p-4 bg-[#302b63] rounded-lg shadow-inner">
-            {["lectures", "assignments", "misc"].map((tab) => (
+            {["lectures", "misc"].map((tab) => (
               <div
                 key={tab}
                 className={`w-1/3 flex justify-center cursor-pointer ${
