@@ -169,12 +169,19 @@ const Classroom = () => {
     if (!activeTab) return null;
 
     if (activeTab === "misc") {
-      return <div className="text-center mt-4">Misc items...</div>;
-    }
+  return (
+    <div className="text-center mt-4">
+      <button className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
+        onClick={() => {
+          chrome.tabs.create({ url: "http://localhost:5173/" });
+        }}
+      >
+        Pyq Check
+      </button>
+    </div>
+  );
+}
 
-    if (activeTab === "assignments") {
-      return <div className="text-center mt-4">Assignments UI here...</div>;
-    }
 
     // ------------------ LECTURES TAB ------------------
     return (
